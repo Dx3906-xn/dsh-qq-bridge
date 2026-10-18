@@ -1,0 +1,10 @@
+# The repository stores LF, always.
+#
+# This is not cosmetic: committing from a shell where core.autocrlf is off stores
+# CRLF, which turns a five-line edit into a whole-file diff and makes the next
+# reader review a rewrite where nothing was rewritten.
+* text=auto
+
+# A test fixture with deliberately broken framing has to survive checkout
+# byte-for-byte on every platform.
+test/fixtures/** -text

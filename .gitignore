@@ -1,0 +1,8 @@
+node_modules/
+*.log
+*.db
+*.db-journal
+.DS_Store
+
+# Written by test/e2e-agent.mjs: a throwaway DSH home, rebuilt on every run.
+.e2e-home/

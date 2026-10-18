@@ -1,0 +1,14 @@
+# dsh-qq-bridge bundle patch
+#
+# One insert mounts the whole plugin. Configuration lives here when it needs to
+# differ from the defaults; §配置 in README.md lists every key and what it does.
+#
+# The defaults assume NapCat/LLBot are already listening on the standard port.
+# Change `endpoint` and `accessToken` to match your backend before enabling this
+# in a profile that answers real people.
+- insert:
+    - id: qq-bridge
+      name: dsh-qq-bridge
+      # config:
+      #   endpoint: ws://127.0.0.1:3001
+      #   groupMode: mention
