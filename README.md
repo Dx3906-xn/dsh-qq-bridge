@@ -229,15 +229,18 @@ node test\e2e-agent.mjs      # 真 agent + 真 socket + 假 QQ，会烧 token
 - **仪器**（`e2e-agent.mjs` 以及假后端 `fake-onebot*.mjs` / `ws-server.mjs` / `helpers.mjs`）：需要参数或真部署，不参与 `npm test`。
 - **真机排查脚本**（`tools/`）：需要一个活着的后端，全部只读或只做一次显式动作。
 
-`tools/` 里的五个，按问题选：
+`tools/` 里的六个，按问题选：
 
 | 脚本 | 回答什么问题 |
 |---|---|
+| `whoami.mjs` | 现在到底有没有登录、以谁的身份。3001 在监听只说明 OneBot 服务起了，不说明后面有账号 |
 | `list-groups.mjs` | 这个号在哪些群里、群号是多少、有哪些好友 |
 | `watch-events.mjs` | 后端**实际**推来了什么：原始 segment、`at` 数组、`self_id` |
 | `group-history.mjs` | 群历史的存储形态：某条消息到底有没有 `at` 段 |
 | `send-group.mjs` | 往群里发一条（验证 `send_group_msg` 与回声过滤） |
 | `watch-group.mjs` | 那条群消息**有没有唤起一轮**：看会话目录是否长出新文件 |
+
+`whoami.mjs` 是第一件该跑的东西：账号被踢之后 NapCat 会留在二维码模式，「桥在重连」和「号掉线了」在日志里都只是 `socket error`，只有问后端本身能分辨。
 
 `watch-events.mjs` 与 `group-history.mjs` 存在的理由值得单独说：**「它到底有没有 @ 我」这个问题不能从会话文本回答**。`admit()` 会把合成的 `@你` 剥掉，所以被 @ 和被手打 `@LD` 的消息在 agent 眼里长得可能一样。只有原始段能分辨。
 
