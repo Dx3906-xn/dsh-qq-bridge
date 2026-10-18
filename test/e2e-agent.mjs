@@ -20,6 +20,7 @@
 import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
+import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { startFakeOneBot, waitFor } from './fake-onebot-server.mjs';
@@ -35,7 +36,18 @@ const flagValue = (name) => {
   return index >= 0 && process.argv[index + 1] !== undefined ? process.argv[index + 1] : '';
 };
 
-const home = resolve(positionals[0] ?? join(here, '..', '.e2e-home'));
+// The throwaway home must NOT live inside this repository. Its profile holds a
+// junction to the repository, so a home at <repo>/.e2e-home makes the repository
+// reachable as <home>/profiles/qq/node_modules/dsh-qq-bridge — and then every
+// later run copies the home into itself, one level deeper each time, until
+// Windows refuses the path length. The default is under the OS temp directory;
+// an explicit path is honoured but checked.
+const home = resolve(positionals[0] ?? join(tmpdir(), 'dsh-qq-bridge-e2e'));
+if (home === plugin || home.startsWith(plugin + '\\') || home.startsWith(plugin + '/')) {
+  console.error(`e2e: refusing to build a home at ${home}`);
+  console.error('e2e: that is inside the plugin tree, whose profile links back to it — the next run would copy it into itself');
+  process.exit(1);
+}
 const source = resolve(flagValue('source') || 'D:\\A\\DSH-L\\agent\\home');
 const bin = flagValue('bin') || 'D:\\A\\DSH-L\\agent\\node_modules\\@deepseek-ai\\dsh\\lib\\bin.js';
 

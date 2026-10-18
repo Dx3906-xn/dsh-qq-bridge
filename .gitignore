@@ -4,5 +4,7 @@ node_modules/
 *.db-journal
 .DS_Store
 
-# Written by test/e2e-agent.mjs: a throwaway DSH home, rebuilt on every run.
+# The e2e home lives in the OS temp directory, not here: its profile links back
+# to this repository, so a home inside the tree would be copied into itself by
+# the next run. Kept as a guard for anyone who passes an explicit path.
 .e2e-home/

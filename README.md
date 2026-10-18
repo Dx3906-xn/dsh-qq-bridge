@@ -189,9 +189,15 @@ node test\e2e-agent.mjs      # 真 agent + 真 socket + 假 QQ，会烧 token
 - **断言套件**（`text/policy/bridge/onebot/socket/tools/roster/host.mjs`）：不需要参数，必须全绿。
 - **仪器**（`e2e-agent.mjs` 以及假后端 `fake-onebot*.mjs` / `ws-server.mjs` / `helpers.mjs`）：需要参数或真部署，不参与 `npm test`。
 
-`e2e-agent.mjs` 会自己搭一个一次性 `DSH_HOME`（`<repo>/.e2e-home`）并往里放一个 profile，然后用假 OneBot 服务端驱动：连上、私聊两轮（第二轮必须记得第一轮说的话）、群里不被 @ 时不回、被 @ 时回在该群。它断言的是**库里的行和 socket 上的字节**，不是 agent 说了什么好听的话。
+`e2e-agent.mjs` 会自己搭一个一次性 `DSH_HOME`（默认 `<系统临时目录>/dsh-qq-bridge-e2e`）并往里放一个 profile，然后用假 OneBot 服务端驱动：连上、私聊两轮（第二轮必须记得第一轮说的话）、群里不被 @ 时不回、被 @ 时回在该群。它断言的是**库里的行和 socket 上的字节**，不是 agent 说了什么好听的话。
 
-一个跑 e2e 时真踩过的坑：`Copy-Item -Recurse` 复制一个活的 DSH home 会顺着 profile 里 `node_modules` 的 junction 展开成几百 MB，而且**筛的是复制那一刻的代码**——改了仓库却没生效，现象是「新功能没起作用」，方向完全指错。所以 e2e 用代码建 home，`node_modules/dsh-qq-bridge` 是指回仓库的 junction。
+两个跑 e2e 时真踩过的坑：
+
+**不要复制一个活的 DSH home。** `Copy-Item -Recurse` 会顺着 profile 里 `node_modules` 的 junction 展开成几百 MB，而且**筛的是复制那一刻的代码**——改了仓库却没生效，现象是「新功能没起作用」，方向完全指错。所以 e2e 用代码建 home，`node_modules/dsh-qq-bridge` 是指回仓库的 junction。
+
+**这个 home 不能放在仓库里面。** 它的 profile 有一条指回仓库的 junction，于是仓库会通过 `<home>/profiles/qq/node_modules/dsh-qq-bridge` 再出现一次；下一次 `rmSync` + 重建就从「仓库包含 home」变成「仓库包含包含仓库的 home」，一层层套下去直到 Windows 拒绝路径长度。所以默认位置是系统临时目录，传一个仓内路径会被拒绝并说明原因。
+
+删这种带 junction 的目录时，**先 `cmd /c rmdir` 拆掉 junction 再 `Remove-Item -Recurse`**——PowerShell 5.1 会顺着 junction 递归删掉仓库本体。
 
 ---
 
