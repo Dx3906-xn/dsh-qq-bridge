@@ -158,8 +158,12 @@ node D:\A\DSH-L\agent\node_modules\@deepseek-ai\dsh\lib\bin.js plugin --profile 
 | `dailyProactive` | `0` | 每天允许主动发几条；`0` 是禁止主动 |
 | `maxLiveAgents` | `8` | 内存里保留几个热 agent，超出淘汰最久未用的 |
 | `rosterPath` | `''` | 会话名单文件；空用 `$DSH_HOME/qq-bridge/conversations.json` |
+| `ownerIds` | `[]` | 谁是主人。名单里的号私聊才算主人在说话；空 = 退回旧假设（私聊即主人） |
 
 `dailyProactive` 默认 `0` 是有意的。**主动说话是这个插件唯一由模型发起、而不是由人发起的路径**，所以它默认关着，打开要运维按天给额度。
+
+`ownerIds` 是补上来的，起因是一个真 bug。桥原本用 `own: !group` 判断「这是主人在说话」——**私聊证明的是房间里只有两个人，不是其中一个是主人**。公开账号上任何人都能私聊这个号，所以第一个找上门的陌生人就被当成了主人：B 用主人的昵称称呼他，把主人的私事说给他听，而记忆插件把他说的话记成了主人的自述，连名字都被覆盖了。`own` 现在由这个名单回答，名单为空时保留旧行为，让没有声明过自己的部署不至于突然不认人。**它必须和 dsh-hippo 的 `ownerIds` 一致**：桥用它写消息的 `own` 标志，记忆用它决定一条事实归谁，两边不一致时，桥认为的陌生人在记忆里是主人。
+
 
 ---
 
@@ -176,6 +180,9 @@ node D:\A\DSH-L\agent\node_modules\@deepseek-ai\dsh\lib\bin.js plugin --profile 
 **`qq_send` 找不到目标时返回失败，不返回成功。** 一个工具为了「看起来正常」而报告发出去了，是最坏的答案：agent 随后会相信那个人被告知了。
 
 **会话名单是薄的。** 只有 key / kind / id / name，没有消息文本。一份会长出内容的名单会变成另一份必须和会话日志保持一致的东西。
+
+**信封里说「谁」，`source` 里也要说一次。** 文本信封写了 `ㅤ不想（1405337008）：…`，模型读得到，但**记忆插件读不懂**——它只看见一串文本，分不清「主人在说自己的事」和「群友在说群友的事」，于是把后者记成前者的。所以每条注入的消息额外带 `source.speaker = { id, name, kind, own, group? }`。`kind` 必须留在 `'user'`：DSH 会按 message source 的 kind 分流（压缩策略、导出器都认这个键），树外的 kind 会静默掉出全部处理，而 `assertV4MessageSources` 只校验非空且不是 `'plugin'`，其余字段原样保留。（[dsh-hippo](https://github.com/Dx3906-xn/dsh-hippo) 就是按这个字段分主语和场合的。）
+
 
 **`session/event` 不用。** 会话日志里的消息必须带 id，DSH 在校验时拒收**整个会话**。所以合成消息一律走 `createUserMessage()`，`source.kind` 用标准的 `'user'`——记忆插件、转录导出、压缩策略都按 kind 分流，树外的 kind 会静默掉出全部。
 

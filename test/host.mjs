@@ -366,6 +366,53 @@ const workspace = process.cwd();
   await host.close();
 }
 
+// --- who is the owner --------------------------------------------------------
+{
+  // `own` used to be `!group`, which reads as "private chats are with the owner".
+  // On a public account that is false, and the cost was not cosmetic: memory filed
+  // a stranger's words under the owner and their nickname overwrote the owner's
+  // name. Identity is configuration now.
+  const agent = fakeAgent();
+  const ctx = fakeCtx({ agentFactory: () => agent });
+  const host = createHost(ctx, { workspace, ownerIds: ['3184763831'] });
+
+  await host.handle({
+    target: { kind: 'private', id: '3184763831' },
+    sender: { id: '3184763831', name: '66' },
+  }, '我是主人', 'k');
+  t.check(agent.followed[0].source.speaker.own === true, 'the configured owner is marked as the owner');
+  t.check(agent.followed[0].source.speaker.kind === 'private', 'a private chat keeps its kind');
+
+  await host.handle({
+    target: { kind: 'private', id: '999' },
+    sender: { id: '999', name: '陌生人' },
+  }, '你好', 'k');
+  t.check(agent.followed[1].source.speaker.own === false, 'a stranger passed as the owner');
+
+  // In a room the owner is present but `own` stays false: a room is never a
+  // private confidence, and a consumer that trusts `own` must not be able to be
+  // talked into one.
+  await host.handle({
+    target: { kind: 'group', id: '1070071261' },
+    sender: { id: '3184763831', name: '晚晚' },
+  }, '在群里我是主人', 'k');
+  t.check(agent.followed[2].source.speaker.own === false, 'a group message from the owner was marked own');
+  t.check(agent.followed[2].source.speaker.group === '1070071261', 'the room id is carried');
+  await host.close();
+
+  // Not configured keeps the old behaviour: a deployment only this machine can
+  // reach should not have to name itself.
+  const agent2 = fakeAgent();
+  const ctx2 = fakeCtx({ agentFactory: () => agent2 });
+  const host2 = createHost(ctx2, { workspace });
+  await host2.handle({
+    target: { kind: 'private', id: '999' },
+    sender: { id: '999', name: '陌生人' },
+  }, '你好', 'k');
+  t.check(agent2.followed[0].source.speaker.own === true, 'an unconfigured bridge stopped trusting private chats');
+  await host2.close();
+}
+
 // --- eviction ----------------------------------------------------------------
 {
   const ctx = fakeCtx();
