@@ -37,6 +37,17 @@ const other = flattenMessage([{ type: 'at', data: { qq: '12345', name: '小明' 
 t.check(other.mentionsSelf === false, "an @ of somebody else is not a mention of me");
 t.check(other.text === '@小明 走', 'the other person keeps their name');
 
+// Seen on the first live group test: somebody typed "@LD" on the keyboard rather
+// than picking the account out of the member list. QQ stores that as ordinary
+// text with no `at` segment, and treating it as a mention would mean answering
+// every message that merely says the account's name.
+const typedAt = flattenMessage([{ type: 'text', data: { text: '测试带@LD ' } }], { selfId: '99999' });
+t.check(typedAt.mentionsSelf === false, 'a hand-typed @name is text, not a mention');
+t.check(typedAt.atIds.length === 0, 'and it carries no at id at all');
+// The trailing space QQ leaves behind is trimmed by flattening, like any other
+// surrounding whitespace; what matters is the @ itself survives as characters.
+t.check(typedAt.text === '测试带@LD', 'the typed @ is left in the text, because somebody really typed it');
+
 t.check(flattenMessage([{ type: 'text', data: { text: 'a' } }, { type: 'image', data: { file: 'x.png' } }]).text === 'a[图片]', 'an image becomes a placeholder, not silence');
 t.check(flattenMessage('[CQ:face,id=14]').text === '[表情]', 'a face is a placeholder');
 t.check(flattenMessage('[CQ:reply,id=7]真的').text === '真的', 'a reply quote is dropped, its content is not');
