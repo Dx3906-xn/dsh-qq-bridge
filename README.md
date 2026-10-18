@@ -148,6 +148,7 @@ node D:\A\DSH-L\agent\node_modules\@deepseek-ai\dsh\lib\bin.js plugin --profile 
 | `language` | `zh` | 信封和工具描述的语言 |
 | `minimumGapMs` | `1200` | 同一个会话两次发送的最小间隔 |
 | `maxChars` | `1200` | 单条上限，超过在句末切开 |
+| `ignoreAutoReply` | `true` | 丢掉对方 QQ 的 `[自动回复]` ，不让它唤醒 agent |
 | `dailyProactive` | `0` | 每天允许主动发几条；`0` 是禁止主动 |
 | `maxLiveAgents` | `8` | 内存里保留几个热 agent，超出淘汰最久未用的 |
 | `rosterPath` | `''` | 会话名单文件；空用 `$DSH_HOME/qq-bridge/conversations.json` |
@@ -171,6 +172,8 @@ node D:\A\DSH-L\agent\node_modules\@deepseek-ai\dsh\lib\bin.js plugin --profile 
 **会话名单是薄的。** 只有 key / kind / id / name，没有消息文本。一份会长出内容的名单会变成另一份必须和会话日志保持一致的东西。
 
 **`session/event` 不用。** 会话日志里的消息必须带 id，DSH 在校验时拒收**整个会话**。所以合成消息一律走 `createUserMessage()`，`source.kind` 用标准的 `'user'`——记忆插件、转录导出、压缩策略都按 kind 分流，树外的 kind 会静默掉出全部。
+
+**自动回复不当人话。** 对方 QQ 开着「不在」自动回复时，那句 `[自动回复]你好，我现在有事不在…` 会作为一条真实消息到达。第一次真机联调就撞上了：桥认真回了一句「那我不吵你了」。它不只是多花一次模型调用——agent 有记忆，会把这句话当成对方关于自己的陈述存下来。所以 `admit()` 在开头按 `[自动回复]` 前缀丢掉它（`ignoreAutoReply: false` 可关掉这个过滤）。**只认前缀不认措辞**：`自动回复` 也可以是句子里一个普通词。
 
 ---
 
@@ -209,8 +212,9 @@ node test\e2e-agent.mjs      # 真 agent + 真 socket + 假 QQ，会烧 token
 - 私聊与群聊，`groupMode` 三档，群白名单
 - 一个会话一个 DSH session，重启续接，预设与模型可配
 - 三个工具，按后端能力裁剪
-- 限速、分段、去重、回声过滤、每日主动额度、会话名单落盘
+- 限速、分段、去重、回声过滤、自动回复过滤、每日主动额度、会话名单落盘
 - 8 个断言套件 + 一个真 agent 端到端
+- 已在**真 QQ** 上联调通过：NapCat 4.18.38 + 小号登录，私聊收发与记忆注入都正常
 
 还没做：
 

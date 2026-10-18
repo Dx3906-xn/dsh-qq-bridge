@@ -120,4 +120,29 @@ t.check(sessionKey('gui', { kind: 'private', id: '10001' }) !== key, 'two backen
 // colon could forge the kind segment and land a private message in a group.
 t.check(sessionKey('onebot', { kind: 'private', id: 'a:group:67890' }) === 'qq:onebot:private:a%3Agroup%3A67890', 'an id containing the separator cannot forge another key');
 
+// --- away messages ----------------------------------------------------------
+// Seen on the first live run: the bridge answered a canned "[自动回复]" and paid
+// for a full model call, and the sentence would have been filed in memory as
+// something the person said about themselves.
+const away = '[自动回复]你好，我现在有事不在，一会再和你联系。';
+const awayDecision = admit(messageEvent({ text: away }), { groupMode: 'mention', selfId: '', ignoreAutoReply: true });
+t.check(awayDecision.accept === false, 'a canned away-message does not wake the agent');
+t.check(awayDecision.reason === 'auto reply', `and says why (got "${awayDecision.reason}")`);
+t.check(
+  admit(messageEvent({ text: away }), { groupMode: 'mention', selfId: '', ignoreAutoReply: false }).accept === true,
+  'the filter can be turned off by the operator',
+);
+t.check(
+  admit(messageEvent({ text: '我跟朋友说我开了自动回复，结果被他笑了一天' }), { groupMode: 'mention', selfId: '', ignoreAutoReply: true }).accept === true,
+  'the phrase in the middle of a sentence is just a sentence',
+);
+t.check(
+  admit(messageEvent({ text: '你好，我现在有事不在，一会再和你联系。' }), { groupMode: 'mention', selfId: '', ignoreAutoReply: true }).accept === true,
+  'and the marker is what identifies it, not the wording alone',
+);
+t.check(
+  admit(messageEvent({ text: away, target: { kind: 'group', id: '67890' } }), { groupMode: 'always', selfId: '', ignoreAutoReply: true }).accept === false,
+  'a group with always does not answer an away-message either',
+);
+
 t.done();
