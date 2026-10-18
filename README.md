@@ -13,9 +13,11 @@
 企鹅号上「跟谁说话」是可以枚举的：私聊是一个人的 id，群是一个群的 id。所以会话 id 直接由它派生：
 
 ```
-qq:<backend>:<kind>:<id>        qq:onebot:private:10001
+qq:<namespace>:<kind>:<id>      qq:onebot:private:10001
                                 qq:onebot:group:67890
 ```
+
+第一段是 `sessionNamespace`（默认 `onebot`），**刻意不是当前传输的名字**：号是同一个号，换传输不换人，见下面「换传输不换会话」。
 
 四段各自 `encodeURIComponent` 再用 `:` 连起来。**每段都编码**，所以一个 id 里带 `:` 也伪造不出另一个会话的键——这不是洁癖，是「发错人」这个错误的唯一防线。
 
@@ -83,11 +85,12 @@ lib/
   text.js     OneBot 消息段 ↔ 纯文本；CQ 码转义；长文本分段
   policy.js   三个决策：这条该不该唤醒、是不是重复、是不是太频繁
   onebot.js   OneBot 11 正向 WebSocket 客户端（可测试：WebSocketImpl 可注入）
+  switchboard.js  一个号可以有多条传输；切换是先连后断
   bridge.js   编排：收到 → 投递 → 回答 → 限速 → 分段 → 送出
   host.js     会话 ↔ DSH session：create 还是 resume、怎么成一条 user 消息、哪段算回答
   tools.js    三个工具，以及为什么只有三个
   roster.js   会话名单落盘，让重启后还能主动说话
-  index.js    Config + apply：把上面几块接起来
+  index.js    Config + apply：把上面几块接起来；`/qq` 命令也在这里
 test/
   *.mjs       断言套件，`npm test` 全跑
   e2e-agent.mjs   真 agent + 真 socket + 假 QQ（要真 key，手动跑）
@@ -96,19 +99,20 @@ test/
 数据流：
 
 ```
-OneBot 后端 ──WS──▶ onebot.js ──QqEvent──▶ bridge.js
-                                              │
-                                     policy.admit（群模式/白名单/去重/回声）
-                                              │
-                                          enqueue（每会话串行）
-                                              │
-                                    host.handle ──▶ DSH session（一轮）
-                                              │
-                                     回答文本 ◀──┘
-                                              │
-                                   cleanOutbound → 限速 → 分段
-                                              │
-OneBot 后端 ◀──WS── send_private_msg / send_group_msg
+                                             ┌─ onebot A ─┐
+OneBot 后端 ──WS──▶ onebot.js ──QqEvent──▶ switchboard ───▶ bridge.js
+                                             └─ onebot B ─┘   │
+                                                     （只有一个连着）policy.admit（群模式/白名单/去重/回声）
+                                                                 │
+                                                             enqueue（每会话串行）
+                                                                 │
+                                                       host.handle ──▶ DSH session（一轮）
+                                                                 │
+                                                        回答文本 ◀──┘
+                                                                 │
+                                                      cleanOutbound → 限速 → 分段
+                                                                 │
+                                  OneBot 后端 ◀──WS── send_private_msg / send_group_msg
 ```
 
 `bridge.js` 里没有一次 `import` 到 Cordis 或 OneBot。这不是为了好看：**每个决策都要能在没有模型、没有 socket、没有 profile 的情况下断言**，否则它只能在线上学。
@@ -146,6 +150,9 @@ node D:\A\DSH-L\agent\node_modules\@deepseek-ai\dsh\lib\bin.js plugin --profile 
 | `enabled` | `true` | 关掉就只保留配置，不连 |
 | `endpoint` | `ws://127.0.0.1:3001` | OneBot 11 正向 WS 地址 |
 | `accessToken` | `''` | 需要时作为 `Authorization: Bearer` 发出 |
+| `backend` | `onebot` | 开机先连哪个传输；可填 `backends` 里声明的任一 id |
+| `backends` | `{}` | 额外传输，`{ id: { endpoint, accessToken } }`。声明了就能用 `/qq backend <id>` 切过去 |
+| `sessionNamespace` | `onebot` | 会话 id 的前缀。**刻意不是当前传输的名字**，改它等于把所有会话改名、把所有人变成初次见面 |
 | `groupMode` | `mention` | `always` / `mention` / `off` |
 | `allowedGroups` | `[]` | 群白名单；空表示所有群按 `groupMode` 处理 |
 | `preset` | `''` | 每个会话用哪个 agent 预设；空用 profile 默认 |
@@ -163,6 +170,22 @@ node D:\A\DSH-L\agent\node_modules\@deepseek-ai\dsh\lib\bin.js plugin --profile 
 `dailyProactive` 默认 `0` 是有意的。**主动说话是这个插件唯一由模型发起、而不是由人发起的路径**，所以它默认关着，打开要运维按天给额度。
 
 `ownerIds` 是补上来的，起因是一个真 bug。桥原本用 `own: !group` 判断「这是主人在说话」——**私聊证明的是房间里只有两个人，不是其中一个是主人**。公开账号上任何人都能私聊这个号，所以第一个找上门的陌生人就被当成了主人：B 用主人的昵称称呼他，把主人的私事说给他听，而记忆插件把他说的话记成了主人的自述，连名字都被覆盖了。`own` 现在由这个名单回答，名单为空时保留旧行为，让没有声明过自己的部署不至于突然不认人。**它必须和 dsh-hippo 的 `ownerIds` 一致**：桥用它写消息的 `own` 标志，记忆用它决定一条事实归谁，两边不一致时，桥认为的陌生人在记忆里是主人。
+
+
+### 换传输不换会话
+
+一个 QQ 号可以被不止一条路摸到：本机的 NapCat、另一台机器上的 LLBot、协议路线不通时换一个端口重启。所以传输是可替换的，而**换的时候进程不重启**——重启还会顺带丢掉每一个热会话和每一轮没说完的话。
+
+```
+/qq status              # 现在连的是谁，通不通
+/qq backend llbot        # 先连新的，连上了再断旧的
+```
+
+三条设计上的取舍：
+
+- **会话 id 跟号走，不跟传输走。** `sessionNamespace` 而不是当前传输的名字进到每一个会话 id 里。否则切一次传输，所有会话改名，每个人都要重新见一次面。
+- **先连后断。** 切换失败时留在旧传输上，而不是两边都没有。失败会在回复里说明原因，不谎报成功。
+- **只给人用，不给模型用。** 切换没有做成工具：一个被陌生人唤醒的 agent 不该能改变自己被找到的方式，否则一次提示注入就能让整个号停在一个不工作的传输上。
 
 
 ---
@@ -202,7 +225,7 @@ node test\e2e-agent.mjs      # 真 agent + 真 socket + 假 QQ，会烧 token
 
 两类文件：
 
-- **断言套件**（`text/policy/bridge/onebot/socket/tools/roster/host.mjs`）：不需要参数，必须全绿。
+- **断言套件**（`text/policy/bridge/onebot/socket/tools/roster/host/switchboard/command.mjs`）：不需要参数，必须全绿。
 - **仪器**（`e2e-agent.mjs` 以及假后端 `fake-onebot*.mjs` / `ws-server.mjs` / `helpers.mjs`）：需要参数或真部署，不参与 `npm test`。
 - **真机排查脚本**（`tools/`）：需要一个活着的后端，全部只读或只做一次显式动作。
 
@@ -241,13 +264,14 @@ node test\e2e-agent.mjs      # 真 agent + 真 socket + 假 QQ，会烧 token
 - 一个会话一个 DSH session，重启续接，预设与模型可配
 - 三个工具，按后端能力裁剪
 - 限速、分段、去重、回声过滤、自动回复过滤、每日主动额度、会话名单落盘
-- 8 个断言套件 + 一个真 agent 端到端
+- 传输热切换：`backends` 声明多条路，`/qq backend <id>` 先连后断地换过去，进程不重启
+- 10 个断言套件 + 一个真 agent 端到端
 - 已在**真 QQ** 上联调通过：NapCat 4.18.38 + 小号登录，私聊收发与记忆注入都正常
 - **群聊三档已在真群验过**（群 1070071261）：不 @ 不回，选中 @ 后回在群里且 `@你` 被剥掉，手打 `@LD` 不算 @
 
 还没做：
 
-- **只有 OneBot 后端。** `gui-auto`（GUI 自动化）后端能绕开协议 hook 的风控面，但实现量大，`QqBackend` 接口是给它留的位置。
+- **只有 OneBot 这一个协议。** `backends` 切的是同一个协议的几条路（不同的 NapCat、不同机器、不同端口），不是不同的协议。`gui-auto`（GUI 自动化）后端能绕开协议 hook 的风控面，但实现量大，`QqBackend` 接口是给它留的位置。
 - **只发文本。** 图片、文件、语音需要先想清楚「模型能不能决定把本地文件发出去」——那是比「它能发一句话」大得多的权限。
 - **不管登录。** 桥不启动 NapCat，也不管它的登录态；后端掉线时桥只负责重连。
 - **微信没有。** 微信生态是另一套（iLink 长轮询、无法主动推送、不支持群），需要单独一个插件而不是这个插件多一个后端。
