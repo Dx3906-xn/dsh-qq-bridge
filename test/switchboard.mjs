@@ -44,6 +44,20 @@ function backendOf(name, options = {}) {
       handlers.add(handler);
       return () => handlers.delete(handler);
     },
+    /**
+     * Answer a quote, when this fake is told it can.
+     *
+     * Left undefined unless `options.quotes` is set, because "this backend cannot
+     * answer the question" is the case the switchboard has to survive: a proxy
+     * that assumed the capability would throw on every ordinary backend.
+     */
+    ...(options.quotes === true
+      ? {
+          async getQuoted(id) {
+            return { text: '', images: [{ url: `https://example/${name}/${id}.jpg` }] };
+          },
+        }
+      : {}),
     status() {
       return { connected, since: connected ? 1 : 0 };
     },
@@ -217,6 +231,34 @@ function backendOf(name, options = {}) {
     connectThrew = String(error instanceof Error ? error.message : error).includes('could not connect');
   }
   t.check(connectThrew, 'an initial backend that does not exist fails loudly at connect');
+}
+
+// --- a quote goes to the active transport ------------------------------------
+{
+  // The switchboard is what the bridge actually holds, so a method that only
+  // exists on the wrapped backend is invisible. That was a live defect: the reply
+  // lookup silently did nothing because `typeof backend.getQuoted === 'function'`
+  // was false on the wrapper.
+  const board = createSwitchboard({
+    id: 'onebot',
+    initial: 'onebot',
+    factories: new Map([['onebot', () => backendOf('onebot', { quotes: true })]]),
+  });
+  await board.connect();
+  const quoted = await board.getQuoted('42');
+  t.check(quoted !== null, 'a transport that can answer a quote is asked');
+  t.check(quoted.images[0].url === 'https://example/onebot/42.jpg', 'and the answer comes back');
+
+  const plain = createSwitchboard({
+    id: 'onebot',
+    initial: 'plain',
+    factories: new Map([['plain', () => backendOf('plain')]]),
+  });
+  await plain.connect();
+  t.check((await plain.getQuoted('42')) === null, 'a transport without history answers null, not a throw');
+  await plain.disconnect();
+  t.check((await plain.getQuoted('42')) === null, 'a disconnected transport answers null too');
+  await board.disconnect();
 }
 
 t.done();

@@ -56,6 +56,28 @@ t.check(flattenMessage([{ type: 'at', data: { qq: 'all' } }]).text === '@全体�
 t.check(flattenMessage('').text === '', 'an empty message flattens to empty');
 t.check(flattenMessage(undefined).text === '', 'an absent message flattens to empty');
 
+// --- a quote ----------------------------------------------------------------
+{
+  // Seen live: the person replied to a picture, added an @ and a space, and sent.
+  // The quote pushed no text, so without the id the message looked empty and the
+  // model answered its own reasoning out loud.
+  const quoted = flattenMessage([
+    { type: 'reply', data: { id: '1011000443' } },
+    { type: 'at', data: { qq: '99999' } },
+    { type: 'text', data: { text: ' ' } },
+  ], { selfId: '99999' });
+  t.check(quoted.replyTo === '1011000443', `the quoted id survives (got ${quoted.replyTo})`);
+  t.check(quoted.text === '@你', 'and the quote itself adds no text');
+  t.check(quoted.mentionsSelf === true, 'the mention is still detected');
+
+  const plain = flattenMessage([{ type: 'text', data: { text: '在吗' } }]);
+  t.check(plain.replyTo === '', 'a message without a quote reports no id');
+
+  const cqQuote = flattenMessage('[CQ:reply,id=42]在吗');
+  t.check(cqQuote.replyTo === '42', 'the CQ-code form reports its quote too');
+  t.check(cqQuote.text === '在吗', 'and still drops the marker from the text');
+}
+
 // --- splitting --------------------------------------------------------------
 const long = '第一句话。第二句话！第三句话？'.repeat(20);
 const pieces = splitMessage(long, 60);

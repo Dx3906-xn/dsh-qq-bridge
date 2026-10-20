@@ -57,6 +57,30 @@ t.check(allowlistedHit.accept === true, 'a group on the allowlist is answered');
 const emptyGroup = admit(group({ text: '' }), { groupMode: 'always', selfId: '99999' });
 t.check(emptyGroup.accept === false, 'an empty group message (an image only) is not a turn');
 
+// Seen live: "@LD" alone flattens to "@你", which is not empty, passes the check
+// above, and then leaves nothing once the marker is stripped. The agent answered
+// an empty line, and the model wrote its own reasoning out as the reply. The
+// decision now happens after the marker is gone.
+const bareMention = admit(group({ text: '@你', mentionsSelf: true }), { groupMode: 'mention', selfId: '99999' });
+t.check(bareMention.accept === false, 'an @ with no words does not wake the agent');
+t.check(bareMention.reason === 'empty after mention', `and says why (${bareMention.reason})`);
+
+const paddedMention = admit(group({ text: '@你   ', mentionsSelf: true }), { groupMode: 'mention', selfId: '99999' });
+t.check(paddedMention.accept === false, 'whitespace after the @ does not make it a message');
+
+// A picture with no caption is still content: the image block is what the agent
+// reads, so the mention is accepted and the text is simply empty.
+const imageOnly = admit(
+  group({ text: '@你', mentionsSelf: true, images: [{ url: 'https://example/x.jpg' }] }),
+  { groupMode: 'mention', selfId: '99999' }
+);
+t.check(imageOnly.accept === true, 'an @ with a picture and no words is a turn');
+t.check(imageOnly.text === '', 'with no text, because there was none');
+
+const mentionWithWords = admit(group({ text: '@你 在吗', mentionsSelf: true }), { groupMode: 'mention', selfId: '99999' });
+t.check(mentionWithWords.accept === true, 'an @ with words is still accepted');
+t.check(mentionWithWords.text === '在吗', 'and the marker is stripped');
+
 // --- dedupe -----------------------------------------------------------------
 // The capacity has a floor of 16 on purpose (a caller that asks for 4 gets 16),
 // so the bound is proved at the floor rather than at 4.

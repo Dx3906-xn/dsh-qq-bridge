@@ -40,7 +40,7 @@ function fakeSession(events = []) {
  * @returns {any} the fake context.
  */
 function fakeCtx(over = {}) {
-  const calls = { created: [], resumed: [], mounted: [], resolved: [], disposed: [] };
+  const calls = { created: [], resumed: [], mounted: [], resolved: [], disposed: [], images: [] };
   const sessionsById = new Map(over.sessionsById ?? []);
   const statById = new Map(over.statById ?? []);
   const ctx = {
@@ -107,16 +107,35 @@ function fakeCtx(over = {}) {
         if (over.noAgents === true) return undefined;
         return {
           create: async (options) => {
+            if (typeof over.beforeOpen === 'function') await over.beforeOpen();
             calls.created.push(options);
+            over.onCreate?.();
             const agent = over.agentFactory?.(options) ?? fakeAgent();
             await options.setup?.(ctx, agent);
             return { agent, dispose: async () => calls.disposed.push(options.sessionId) };
           },
           resume: async (options) => {
+            if (typeof over.beforeOpen === 'function') await over.beforeOpen();
             calls.resumed.push(options);
+            over.onResume?.();
             const agent = over.agentFactory?.(options) ?? fakeAgent();
             await options.setup?.(ctx, agent);
             return { agent, dispose: async () => calls.disposed.push(options.resumeSessionId) };
+          },
+        };
+      }
+      if (name === 'attachments') {
+        if (over.noAttachments === true) return undefined;
+        return {
+          saveImage: async (input) => {
+            calls.images.push({ mediaType: input.mediaType, bytes: input.data.length, name: input.name });
+            return {
+              attachmentId: `att-${calls.images.length}`,
+              mediaType: input.mediaType,
+              bytes: input.data.length,
+              width: 1,
+              height: 1,
+            };
           },
         };
       }
@@ -451,6 +470,167 @@ const workspace = process.cwd();
   }
   t.check(/agents service is not mounted/.test(message), 'without the agents service it names what is missing');
   t.check(/dsh-base/.test(message), 'and which bundle provides it');
+}
+
+// --- a turn nobody asked for -------------------------------------------------
+{
+  // The proactive path. The brief is an instruction to the agent, not a message
+  // from the person, and a memory plugin that read it as `kind: 'user'` would
+  // extract facts out of the plugin's own words.
+  const agent = fakeAgent();
+  const ctx = fakeCtx({ agentFactory: () => agent });
+  const host = createHost(ctx, { workspace });
+  const reply = await host.speak('k', '你刚看到一个视频，想跟他说点什么吗？', { plugin: 'dsh-proactive' });
+
+  t.check(reply === '收到', 'the turn ran and its text came back');
+  const message = agent.followed[0];
+  t.check(message.source?.kind === 'plugin:dsh-proactive', `the brief names its producer (got ${message.source?.kind})`);
+  t.check(message.source?.form === 'instructions', 'it is marked as addressed to the agent, not said by a person');
+  t.check(message.content[0].text.includes('想跟他说点什么吗'), 'the brief is what the model reads');
+  t.check(message.role === 'user', 'it still travels as a user-role message, which the harness requires');
+  await host.close();
+}
+
+{
+  const ctx = fakeCtx();
+  const host = createHost(ctx, { workspace });
+  await host.close();
+  t.check((await host.speak('k', 'hi')) === '', 'a closed host does not run a proactive turn');
+}
+
+// --- images ------------------------------------------------------------------
+{
+  // A 1x1 PNG, valid enough for the magic-byte sniff and the fake store.
+  const png = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+
+  const agent = fakeAgent();
+  const ctx = fakeCtx({ agentFactory: () => agent });
+  const host = createHost(ctx, { workspace, ownerIds: ['10001'] });
+  await host.handle({
+    target: { kind: 'private', id: '10001' },
+    sender: { id: '10001', name: '林晚' },
+    images: [{ url: png, file: 'cat.png' }],
+  }, '林晚：看我发的猫', 'k');
+
+  t.check(ctx.calls.images.length === 1, 'the owner image was saved through attachments');
+  t.check(ctx.calls.images[0].mediaType === 'image/png', 'the media type was sniffed from the bytes');
+  const content = agent.followed[0].content;
+  t.check(content.some((block) => block.type === 'image'), 'the user message carries an image block');
+  t.check(content[0].type === 'text' && content[0].text === '林晚：看我发的猫', 'the text still comes first');
+
+  // A group picture stays text: the room is not a private confidence.
+  const groupAgent = fakeAgent();
+  const groupCtx = fakeCtx({ agentFactory: () => groupAgent });
+  const groupHost = createHost(groupCtx, { workspace, ownerIds: ['10001'] });
+  await groupHost.handle({
+    target: { kind: 'group', id: '1070071261' },
+    sender: { id: '10001', name: '林晚' },
+    images: [{ url: png }],
+  }, '[群] 林晚：看这个', 'g');
+  t.check(groupCtx.calls.images.length === 0, 'a group image is not saved');
+  t.check(!groupAgent.followed[0].content.some((block) => block.type === 'image'), 'a group image stays text');
+
+  // A broken URL must not fail the turn.
+  const brokenAgent = fakeAgent();
+  const brokenCtx = fakeCtx({ agentFactory: () => brokenAgent });
+  const brokenHost = createHost(brokenCtx, { workspace, ownerIds: ['10001'] });
+  const answer = await brokenHost.handle({
+    target: { kind: 'private', id: '10001' },
+    sender: { id: '10001', name: '林晚' },
+    images: [{ url: 'http://127.0.0.1:1/nope.png' }],
+  }, '看这个', 'k');
+  t.check(answer === '收到', 'a failed image download still answers');
+  t.check(brokenAgent.followed[0].content.length === 1, 'and falls back to text only');
+
+  // No attachment service: degrade, do not throw.
+  const noCtx = fakeCtx({ noAttachments: true });
+  const noHost = createHost(noCtx, { workspace, ownerIds: ['10001'] });
+  await noHost.handle({
+    target: { kind: 'private', id: '10001' },
+    sender: { id: '10001', name: '林晚' },
+    images: [{ url: png }],
+  }, '在吗', 'k');
+  t.check(noCtx.calls.created.length === 1, 'without attachments the turn still runs');
+
+  // `off` wins over `all`, and a stranger never gets an image in.
+  const offAgent = fakeAgent();
+  const offCtx = fakeCtx({ agentFactory: () => offAgent });
+  const offHost = createHost(offCtx, { workspace, ownerIds: ['10001'], imageFrom: 'off' });
+  await offHost.handle({
+    target: { kind: 'private', id: '10001' },
+    sender: { id: '10001', name: '林晚' },
+    images: [{ url: png }],
+  }, '看图', 'k');
+  t.check(offCtx.calls.images.length === 0, 'imageFrom off saves nothing');
+  t.check(!offAgent.followed[0].content.some((block) => block.type === 'image'), 'imageFrom off keeps text only');
+}
+
+// --- two callers, one session ------------------------------------------------
+{
+  // Seen live: an inbound message and a proactive turn arrived together, both
+  // missed the live cache, and both opened the session. The second failed with
+  // "session … is already owned by an active write handle", which from the
+  // person's side looked like being ignored.
+  const agent = fakeAgent();
+  let created = 0;
+  let resumed = 0;
+  let release;
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  const ctx = fakeCtx({
+    agentFactory: () => agent,
+    onCreate: () => {
+      created += 1;
+    },
+    onResume: () => {
+      resumed += 1;
+    },
+    // Hold the first open open, so the second caller arrives while it is in flight.
+    beforeOpen: () => gate,
+  });
+  const host = createHost(ctx, { workspace });
+
+  const first = host.handle({ target: { kind: 'private', id: '1' } }, '在吗', 'same');
+  const second = host.speak('same', '你看到一个视频');
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  release();
+  await Promise.all([first, second]);
+
+  t.check(created + resumed === 1, `the session was opened once, not twice (opened ${created + resumed})`);
+  t.check(agent.followed.length === 2, 'both turns still ran, one after the other');
+  await host.close();
+}
+
+// --- a session somebody else already opened ----------------------------------
+{
+  // The Web UI on the same Harness holds the write handle for as long as the
+  // conversation page is open. Resuming then throws "already owned by an active
+  // write handle", and every QQ message in that chat is lost while the page stays
+  // open. Attaching to the live agent is the fix.
+  const liveAgent = fakeAgent();
+  const ctx = fakeCtx();
+  ctx.get = ((original) => (name) => {
+    if (name === 'agents') {
+      return {
+        get: (id) => (id === 'shared' ? liveAgent : undefined),
+        create: async () => {
+          throw new Error('should not create a session that is already live');
+        },
+        resume: async () => {
+          throw new Error('should not resume a session that is already live');
+        },
+      };
+    }
+    return original(name);
+  })(ctx.get.bind(ctx));
+
+  const host = createHost(ctx, { workspace });
+  const answer = await host.handle({ target: { kind: 'private', id: '1' } }, '在吗', 'shared');
+  t.check(answer === '收到', 'the turn ran on the already-live agent');
+  t.check(liveAgent.followed.length === 1, 'and the message reached it');
+  await host.close();
+  t.check(liveAgent.followed.length === 1, 'closing the bridge does not tear down a session it did not open');
 }
 
 t.done();

@@ -229,4 +229,51 @@ const PRIVATE_KEY = 'qq:onebot:private:10001';
   t.check(host.calls.length === 0, 'a message after stop does not start a turn');
 }
 
+// --- a quoted picture --------------------------------------------------------
+{
+  // The live shape: reply to a picture, add an @, send. The quote contributes no
+  // text, so without resolving it the message is empty and the model answers its
+  // own reasoning. With it, the picture comes back and the turn is real.
+  const backend = fakeBackend();
+  backend.getQuoted = async (id) => (id === '1011000443'
+    ? { text: '', images: [{ url: 'https://example/quoted.jpg' }] }
+    : null);
+  const host = fakeHost({ answer: '看到了。' });
+  const bridge = createBridge({ backend, host, settings: settings({ groupMode: 'mention' }) });
+  await bridge.start();
+
+  backend.emit(messageEvent({
+    target: { kind: 'group', id: '1070071261', name: '群' },
+    text: '@你',
+    mentionsSelf: true,
+    replyTo: '1011000443',
+    messageId: 'q-1',
+  }));
+  await until(() => backend.sent.length === 1, { label: 'the reply to a quoted picture' });
+  t.check(host.calls.length === 1, 'a bare @ that quotes a picture reaches the agent');
+  t.check(host.calls[0].event.images.length === 1, `the quoted image came along (got ${host.calls[0].event.images.length})`);
+  t.check(host.calls[0].event.images[0].url === 'https://example/quoted.jpg', 'and it is the one that was quoted');
+  await bridge.stop();
+}
+
+{
+  // A quote that cannot be resolved must not turn into a turn: an empty line is
+  // still an empty line, and answering it is what leaked reasoning once.
+  const backend = fakeBackend();
+  backend.getQuoted = async () => null;
+  const host = fakeHost();
+  const bridge = createBridge({ backend, host, settings: settings({ groupMode: 'mention' }) });
+  await bridge.start();
+  backend.emit(messageEvent({
+    target: { kind: 'group', id: '1070071261', name: '群' },
+    text: '@你',
+    mentionsSelf: true,
+    replyTo: 'missing',
+    messageId: 'q-2',
+  }));
+  await new Promise((resolve) => setTimeout(resolve, 40));
+  t.check(host.calls.length === 0, 'an unresolvable quote with no words is not a turn');
+  await bridge.stop();
+}
+
 t.done();
