@@ -176,6 +176,25 @@ t.check(renderedMention !== rendered, 'the two framings are different');
 const renderedEmpty = formatRoomContext({ room: '1', lines: [] });
 t.check(typeof renderedEmpty === 'string' && renderedEmpty.length > 0, 'an empty transcript still renders a usable brief');
 
+// A transcript that only forbids reading it as addressed gets silence even when
+// the room is discussing her. The guidance has to name the case where joining is
+// correct, or `auto` degenerates into `mention`.
+t.check(rendered.includes('聊你'), 'the brief names talking-about-her as a reason to join');
+t.check(/他.*她.*指你|指你/.test(rendered), 'and says a pronoun can mean her');
+t.check(rendered.includes('SILENT'), 'while still offering silence for unrelated chatter');
+
+// What the room calls her is what turns "let's give him an avatar" into a line
+// about her. Without the alias the pronoun has no antecedent.
+const named = formatRoomContext({
+  room: '67890',
+  lines: ['不想: @LD 在吗'],
+  selfNames: ['大肥鱼', 'LD'],
+});
+t.check(named.includes('LD'), 'the alias hint names what the room calls her');
+t.check(named.includes('大肥鱼'), 'including the full name');
+const unnamed = formatRoomContext({ room: '67890', lines: ['x'], selfNames: [] });
+t.check(!unnamed.includes('叫你'), 'an empty alias list adds no dangling hint');
+
 // --- dedupe -----------------------------------------------------------------
 // The capacity has a floor of 16 on purpose (a caller that asks for 4 gets 16),
 // so the bound is proved at the floor rather than at 4.

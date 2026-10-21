@@ -360,4 +360,45 @@ const PRIVATE_KEY = 'qq:onebot:private:10001';
   await bridge.stop();
 }
 
+{
+  // The names in the transcript are what make a room readable. `card` arrives as
+  // an empty string far more often than as undefined, and a naive `??` fallback
+  // turned every speaker into "某人".
+  const backend = fakeBackend();
+  const host = fakeHost({ answer: 'SILENT' });
+  const bridge = createBridge({ backend, host, settings: settings({ groupMode: 'auto' }) });
+  await bridge.start();
+  backend.emit(
+    messageEvent({
+      target: { kind: 'group', id: '1070071261', name: '群' },
+      sender: { id: '10001', name: '不想', card: '' },
+      text: '焊电路板的来',
+      messageId: 'n-1',
+    })
+  );
+  await until(() => host.calls.length === 1, { label: 'the decision' });
+  t.check(host.calls[0].text.includes('不想: 焊电路板的来'), 'an empty group card falls back to the nickname');
+  t.check(!host.calls[0].text.includes('某人'), 'and does not leave a placeholder speaker');
+  await bridge.stop();
+}
+
+{
+  // The group nickname wins when there is one, because that is what the room sees.
+  const backend = fakeBackend();
+  const host = fakeHost({ answer: 'SILENT' });
+  const bridge = createBridge({ backend, host, settings: settings({ groupMode: 'auto' }) });
+  await bridge.start();
+  backend.emit(
+    messageEvent({
+      target: { kind: 'group', id: '1070071261', name: '群' },
+      sender: { id: '10001', name: '不想', card: '工兵' },
+      text: '意思更改频率了？',
+      messageId: 'n-2',
+    })
+  );
+  await until(() => host.calls.length === 1, { label: 'the decision' });
+  t.check(host.calls[0].text.includes('工兵: 意思更改频率了？'), 'a group card is used when present');
+  await bridge.stop();
+}
+
 t.done();
