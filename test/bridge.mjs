@@ -276,4 +276,88 @@ const PRIVATE_KEY = 'qq:onebot:private:10001';
   await bridge.stop();
 }
 
+// --- auto --------------------------------------------------------------------
+// `auto` is the mode where the agent decides whether the room wants to hear from
+// it. Three properties are what make that safe rather than expensive: the room's
+// recent lines reach the agent, a run of short messages costs one turn rather
+// than five, and saying nothing actually sends nothing.
+{
+  const backend = fakeBackend();
+  const host = fakeHost({ answer: '在打游戏 (´-ω-`)' });
+  const bridge = createBridge({ backend, host, settings: settings({ groupMode: 'auto' }) });
+  await bridge.start();
+
+  const groupMessage = (text, over = {}) =>
+    messageEvent({
+      target: { kind: 'group', id: '1070071261', name: '群' },
+      sender: { id: '10001', name: '晚晚', card: '' },
+      text,
+      ...over,
+    });
+
+  backend.emit(groupMessage('有人吗', { messageId: 'a-1' }));
+  await until(() => backend.sent.length === 1, { label: 'the auto reply' });
+  t.check(host.calls.length === 1, 'auto wakes the agent for a message not addressed to it');
+  t.check(host.calls[0].event.autoContext === true, 'the turn is marked as a room transcript');
+  t.check(host.calls[0].text.includes('有人吗'), 'the transcript contains what was actually said');
+  t.check(host.calls[0].text.includes('SILENT'), 'and offers silence as an answer');
+
+  // The transcript grows, but the turn does not: one decision covers the burst.
+  backend.emit(groupMessage('在打游戏吗', { messageId: 'a-2' }));
+  backend.emit(groupMessage('算了 你们玩', { messageId: 'a-3' }));
+  await new Promise((resolve) => setTimeout(resolve, 40));
+  t.check(host.calls.length === 1, 'a burst of messages does not become a burst of turns');
+
+  // A mention is not a judgement call, so it never waits for the interval.
+  backend.emit(groupMessage('@你 你来不来', { messageId: 'a-4', mentionsSelf: true }));
+  await until(() => backend.sent.length === 2, { label: 'the reply to the mention' });
+  t.check(host.calls.length === 2, 'a mention bypasses the interval');
+  t.check(
+    host.calls[1].text.includes('叫你'),
+    'and the brief says it is addressed to her rather than to the room'
+  );
+  await bridge.stop();
+}
+
+{
+  // The whole point of `auto`: "not now" is an answer, and it is silent.
+  const backend = fakeBackend();
+  const host = fakeHost({ answer: () => 'SILENT' });
+  const bridge = createBridge({ backend, host, settings: settings({ groupMode: 'auto' }) });
+  await bridge.start();
+  backend.emit(
+    messageEvent({
+      target: { kind: 'group', id: '1070071261', name: '群' },
+      sender: { id: '10001', name: '晚晚', card: '' },
+      text: '他们俩在吵架 别理',
+      messageId: 's-1',
+    })
+  );
+  await until(() => host.calls.length === 1, { label: 'the decision' });
+  await new Promise((resolve) => setTimeout(resolve, 40));
+  t.check(host.calls.length === 1, 'the agent was asked');
+  t.check(backend.sent.length === 0, 'and nothing was sent when it said SILENT');
+  await bridge.stop();
+}
+
+{
+  // A reply that merely contains the word is a reply. Swallowing it would hide a
+  // real answer behind an escape hatch meant for refusals.
+  const backend = fakeBackend();
+  const host = fakeHost({ answer: '我不说 SILENT 那个词，但我在' });
+  const bridge = createBridge({ backend, host, settings: settings({ groupMode: 'auto' }) });
+  await bridge.start();
+  backend.emit(
+    messageEvent({
+      target: { kind: 'group', id: '1070071261', name: '群' },
+      sender: { id: '10001', name: '晚晚', card: '' },
+      text: '你在吗',
+      messageId: 'w-1',
+    })
+  );
+  await until(() => backend.sent.length === 1, { label: 'the sentence' });
+  t.check(backend.sent[0].content.text.includes('但我在'), 'a sentence containing SILENT is still sent');
+  await bridge.stop();
+}
+
 t.done();

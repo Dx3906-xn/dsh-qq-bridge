@@ -5,7 +5,18 @@
 // obvious after a week of uptime: a group answered too eagerly, the same message
 // handled twice after a reconnect, an account that sends without a gap, a
 // companion that checks in forty times.
-import { admit, createDailyBudget, createDedupe, createRateLimiter, GROUP_MODES, sessionKey } from '../lib/policy.js';
+import {
+  admit,
+  createAutoThrottle,
+  createDailyBudget,
+  createDedupe,
+  createRateLimiter,
+  createRoomLog,
+  formatRoomContext,
+  GROUP_MODES,
+  isSilence,
+  sessionKey,
+} from '../lib/policy.js';
 import { messageEvent, suite } from './helpers.mjs';
 
 const t = suite('policy');
@@ -18,7 +29,7 @@ const group = (over = {}) => messageEvent({
 });
 
 // --- admit ------------------------------------------------------------------
-t.check(GROUP_MODES.join(',') === 'always,mention,off', 'the three modes are the documented three');
+t.check(GROUP_MODES.join(',') === 'always,mention,auto,off', 'the four modes are the documented four');
 
 const privateAlways = admit(messageEvent({ text: '在吗' }), { groupMode: 'off', selfId: '99999' });
 t.check(privateAlways.accept === true, 'a private message is answered even when groups are off');
@@ -80,6 +91,90 @@ t.check(imageOnly.text === '', 'with no text, because there was none');
 const mentionWithWords = admit(group({ text: '@你 在吗', mentionsSelf: true }), { groupMode: 'mention', selfId: '99999' });
 t.check(mentionWithWords.accept === true, 'an @ with words is still accepted');
 t.check(mentionWithWords.text === '在吗', 'and the marker is stripped');
+
+// --- auto -------------------------------------------------------------------
+// `auto` is not "answer everything with an extra step": it accepts the message so
+// the agent can read the room, and the decision to *speak* is the agent's. These
+// checks pin the acceptance half; the throttling half lives below.
+const autoQuiet = admit(group({ text: '今天不去上课了' }), { groupMode: 'auto', selfId: '99999' });
+t.check(autoQuiet.accept === true, 'auto mode accepts a message not addressed to it, so the room can be read');
+t.check(autoQuiet.reason === 'auto', `and marks it as a decision (${autoQuiet.reason})`);
+t.check(autoQuiet.text === '今天不去上课了', 'the text reaches the agent unchanged');
+
+const autoMention = admit(group({ text: '@你 在吗', mentionsSelf: true }), { groupMode: 'auto', selfId: '99999' });
+t.check(autoMention.accept === true, 'auto mode accepts a mention');
+t.check(autoMention.reason === 'auto mentions this account', `and separates it from a judgement call (${autoMention.reason})`);
+t.check(autoMention.text === '在吗', 'the @ marker is stripped in auto too');
+
+const autoOff = admit(group({ text: '@你 在吗', mentionsSelf: true }), { groupMode: 'off', selfId: '99999' });
+t.check(autoOff.accept === false, 'auto does not soften off');
+
+// --- isSilence --------------------------------------------------------------
+// Saying nothing has to be a first-class answer, and it has to be matched as the
+// whole answer: a reply that merely contains the word is a reply.
+t.check(isSilence('SILENT') === true, 'the bare word is silence');
+t.check(isSilence('  silent  ') === false, 'the word is case-sensitive, so a lowercase slip is still sent');
+t.check(isSilence('「SILENT」') === true, 'a quoted form is still a refusal');
+t.check(isSilence('SILENT。') === true, 'a trailing full stop does not make it a sentence');
+t.check(isSilence('我不说了 SILENT') === false, 'a sentence containing the word is a sentence');
+t.check(isSilence('') === false, 'an empty answer is not a refusal, it is a failed turn');
+
+// --- room log ---------------------------------------------------------------
+// The transcript is what makes an `auto` decision informed rather than reactive,
+// so the bound and the order are both part of the contract.
+const room = createRoomLog(3);
+room.note('g1', 'a');
+room.note('g1', 'b');
+t.check(room.size('g1') === 2, 'lines accumulate');
+room.note('g1', '');
+t.check(room.size('g1') === 2, 'an empty line is not a line');
+room.note('g1', 'c');
+room.note('g1', 'd');
+t.check(room.size('g1') === 3, `the log is bounded (size ${room.size('g1')})`);
+t.check(room.read('g1').join(',') === 'b,c,d', `and keeps the newest, in order (${room.read('g1').join(',')})`);
+t.check(room.read('g1', 2).join(',') === 'c,d', 'a shorter window takes the tail');
+t.check(room.read('nobody').length === 0, 'an unknown room reads as empty rather than throwing');
+room.forget('g1');
+t.check(room.size('g1') === 0, 'forgetting a room empties it');
+
+// --- auto throttle ----------------------------------------------------------
+// Two ceilings preventing two different things: the interval lets a room finish a
+// thought, the hourly cap lets a chatty room stay cheap.
+let autoClock = 1_000_000;
+const autoGuard = createAutoThrottle({ minIntervalMs: 45_000, maxPerHour: 2 }, () => autoClock);
+t.check(autoGuard.allow('g1') === true, 'the first decision in a room is allowed');
+autoGuard.note('g1');
+t.check(autoGuard.allow('g1') === false, 'an immediate second decision is not');
+t.check(autoGuard.wait('g1') === 45_000, `and reports the wait (${autoGuard.wait('g1')})`);
+t.check(autoGuard.allow('g1', { urgent: true }) === true, 'a mention never waits');
+autoClock += 45_000;
+t.check(autoGuard.allow('g1') === true, 'after the interval it is allowed again');
+autoGuard.note('g1');
+t.check(autoGuard.allow('g1') === false, 'the hourly cap stops the third');
+t.check(autoGuard.remaining('g1') === 0, `and reports nothing left (${autoGuard.remaining('g1')})`);
+t.check(autoGuard.allow('g1', { urgent: true }) === true, 'a mention still gets through the hourly cap');
+t.check(autoGuard.allow('g2') === true, 'the ceiling is per room, not global');
+autoClock += 3_600_001;
+t.check(autoGuard.allow('g1') === true, 'the window rolls off rather than resetting on a clock boundary');
+
+// --- room context -----------------------------------------------------------
+const rendered = formatRoomContext({
+  room: '67890',
+  lines: ['晚晚: 有人吗', '小明: 在打游戏'],
+  mentioned: false,
+});
+t.check(rendered.includes('67890'), 'the rendered context names the room');
+t.check(rendered.includes('晚晚: 有人吗'), 'it quotes the lines rather than summarising them');
+t.check(rendered.includes('SILENT'), 'and offers silence as an answer');
+const renderedMention = formatRoomContext({
+  room: '67890',
+  lines: ['晚晚: @你 在吗'],
+  mentioned: true,
+});
+t.check(renderedMention.includes('叫你'), 'a mention is framed as addressed to her');
+t.check(renderedMention !== rendered, 'the two framings are different');
+const renderedEmpty = formatRoomContext({ room: '1', lines: [] });
+t.check(typeof renderedEmpty === 'string' && renderedEmpty.length > 0, 'an empty transcript still renders a usable brief');
 
 // --- dedupe -----------------------------------------------------------------
 // The capacity has a floor of 16 on purpose (a caller that asks for 4 gets 16),
