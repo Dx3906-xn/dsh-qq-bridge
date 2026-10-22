@@ -89,6 +89,21 @@ export function fakeBackend(options = {}) {
     status() {
       return { connected, since: connected ? Date.now() : 0 };
     },
+    /**
+     * The account state, which is a different question from the socket.
+     *
+     * Defaults to "signed in when connected" because that is the ordinary case and
+     * every existing test means a working transport. `accountOnline` overrides it
+     * for the failure the real backend can now report: a socket that stays up while
+     * the account behind it is gone.
+     */
+    async health() {
+      if (options.healthThrows === true) throw new Error('health probe failed');
+      const online = options.accountOnline === undefined
+        ? (connected ? true : null)
+        : options.accountOnline;
+      return { online };
+    },
     /** Deliver an event as the backend would. @param {any} event - the event. */
     emit(event) {
       for (const handler of handlers) handler(event);

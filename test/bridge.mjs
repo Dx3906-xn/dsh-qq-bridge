@@ -9,13 +9,22 @@ import { fakeBackend, fakeHost, messageEvent, suite, until } from './helpers.mjs
 
 const t = suite('bridge');
 
-/** Settings with the rate limit effectively off, so tests do not sleep. */
+/**
+ * Settings with the rate limit effectively off, so tests do not sleep.
+ *
+ * `mergeWindowMs: 0` and no reply delay, because most suites here are about one
+ * message producing one answer and a timer in the middle would make every
+ * assertion wait. The suites that test merging turn it back on explicitly.
+ */
 const settings = (over = {}) => ({
   groupMode: 'mention',
   allowedGroups: [],
   minimumGapMs: 0,
   dailyProactive: 0,
   maxChars: 1200,
+  mergeWindowMs: 0,
+  replyDelayMinMs: 0,
+  replyDelayMaxMs: 0,
   ...over,
 });
 
@@ -404,6 +413,161 @@ const PRIVATE_KEY = 'qq:onebot:private:10001';
   );
   await until(() => host.calls.length === 1, { label: 'the decision' });
   t.check(host.calls[0].text.includes('工兵: 意思更改频率了？'), 'a group card is used when present');
+  await bridge.stop();
+}
+
+// --- the account behind the socket -------------------------------------------
+//
+// A live WebSocket is not a signed-in account, and on 2026-10-22 the difference
+// cost three hours of silence: NapCat's socket stayed up, its link to Tencent
+// dropped, sends failed with a vendor error, and nothing in this bridge ever
+// asked. `connected` reported true the whole time.
+{
+  const backend = fakeBackend({ accountOnline: false });
+  const host = fakeHost();
+  const bridge = createBridge({ backend, host, settings: settings() });
+  await bridge.start();
+  const health = await bridge.health();
+  t.check(health.online === false, 'health reports an account that is not signed in');
+  t.check(bridge.stats().connected === true, 'while the socket still says connected');
+  t.check(bridge.stats().accountOnline === null, 'and the cached state is empty until the timer asks');
+  await bridge.stop();
+}
+
+{
+  // A backend without the call is unknown, not broken. Reporting offline there
+  // would make every non-NapCat transport look permanently down.
+  const backend = fakeBackend();
+  delete backend.health;
+  const bridge = createBridge({ backend, host: fakeHost(), settings: settings() });
+  await bridge.start();
+  const health = await bridge.health();
+  t.check(health.online === null, 'a backend with no health call reports unknown');
+  t.check(typeof health.detail === 'string', 'and says why');
+  await bridge.stop();
+}
+
+{
+  // A probe that throws must not take the bridge with it: the check runs on a
+  // timer, and an exception there would surface as an unhandled rejection.
+  const backend = fakeBackend({ healthThrows: true });
+  const bridge = createBridge({
+    backend,
+    host: fakeHost(),
+    // Logged rather than rethrown: the point is that the bridge survives, and the
+    // warning is how an operator learns the probe itself is broken.
+    settings: settings({ healthCheckMs: 10_000 }),
+    log: () => {},
+  });
+  await bridge.start();
+  let threw = false;
+  try {
+    await bridge.health();
+  } catch {
+    threw = true;
+  }
+  t.check(threw === true, 'a failing probe surfaces to a caller that asked directly');
+  // The timer path is the one that matters: it must swallow the failure.
+  const later = await bridge.health().catch(() => ({ online: null }));
+  t.check(later.online === null, 'and is reported as unknown rather than crashing the bridge');
+  await bridge.stop();
+}
+
+// --- a burst is one thought --------------------------------------------------
+//
+// The live transcripts show "在吗" "在不在" "人呢" arriving eight seconds apart and
+// producing three separate turns — three answers to what was one question, and
+// sometimes three identical ones. A window turns the burst into one turn.
+{
+  const backend = fakeBackend();
+  const host = fakeHost({ answer: '在' });
+  const bridge = createBridge({ backend, host, settings: settings({ mergeWindowMs: 60 }) });
+  await bridge.start();
+
+  const one = messageEvent({ text: '在吗', messageId: 'm-1' });
+  const two = messageEvent({ text: '在不在', messageId: 'm-2' });
+  const three = messageEvent({ text: '人呢', messageId: 'm-3' });
+  backend.emit(one);
+  backend.emit(two);
+  backend.emit(three);
+
+  await until(() => host.calls.length === 1, { label: 'the single merged turn' });
+  // Give a second window the chance to produce a second turn, which is the bug.
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  t.check(host.calls.length === 1, `three messages became one turn (got ${host.calls.length})`);
+  t.check(host.calls[0].text.includes('在吗'), 'the merged text keeps the first line');
+  t.check(host.calls[0].text.includes('在不在'), 'and the second');
+  t.check(host.calls[0].text.includes('人呢'), 'and the third');
+  t.check(host.calls[0].text.includes('\n'), 'joined on separate lines, so the model sees three messages');
+  t.check(backend.sent.length === 1, 'and one answer was sent, not three');
+  await bridge.stop();
+}
+
+{
+  // A single message is still answered — the window delays it, it does not drop
+  // it. This is the regression that would make every conversation silent.
+  const backend = fakeBackend();
+  const host = fakeHost({ answer: '在' });
+  const bridge = createBridge({ backend, host, settings: settings({ mergeWindowMs: 40 }) });
+  await bridge.start();
+  backend.emit(messageEvent({ text: '在吗', messageId: 's-1' }));
+  await until(() => backend.sent.length === 1, { label: 'the reply to a lone message' });
+  t.check(host.calls.length === 1, 'one message still gets one turn');
+  t.check(backend.sent[0].content.text === '在', 'and the answer is unchanged');
+  await bridge.stop();
+}
+
+{
+  // Two conversations do not share a batch. Merging is per conversation because
+  // the thing being merged is one person finishing one thought.
+  const backend = fakeBackend();
+  const host = fakeHost({ answer: '在' });
+  const bridge = createBridge({ backend, host, settings: settings({ mergeWindowMs: 40 }) });
+  await bridge.start();
+  backend.emit(messageEvent({ text: '在吗', messageId: 'a-1' }));
+  backend.emit(messageEvent({
+    text: '在不在',
+    messageId: 'b-1',
+    target: { kind: 'private', id: '20002', name: '别人' },
+    sender: { id: '20002', name: '别人', card: '' },
+  }));
+  await until(() => host.calls.length === 2, { label: 'both conversations answered' });
+  t.check(host.calls.length === 2, 'two people are two turns, not one');
+  t.check(!host.calls[0].text.includes('在不在') && !host.calls[1].text.includes('在吗'), 'and neither text leaked into the other');
+  await bridge.stop();
+}
+
+// --- the reply is not instant -------------------------------------------------
+{
+  const backend = fakeBackend();
+  const host = fakeHost({ answer: '在' });
+  const bridge = createBridge({
+    backend,
+    host,
+    settings: settings({ replyDelayMinMs: 80, replyDelayMaxMs: 120 }),
+  });
+  await bridge.start();
+  const started = Date.now();
+  backend.emit(messageEvent({ text: '在吗', messageId: 'd-1' }));
+  await until(() => backend.sent.length === 1, { label: 'the delayed reply' });
+  const elapsed = Date.now() - started;
+  t.check(elapsed >= 70, `the reply waited (${elapsed}ms)`);
+  // The model call itself is instant in a fake host, so anything above the delay
+  // is the delay.
+  t.check(elapsed < 2000, `and not much longer than asked (${elapsed}ms)`);
+  await bridge.stop();
+}
+
+{
+  // A zero range means no pause at all: a deployment may want her instant, and a
+  // pause that nobody asked for is a bug in their eyes.
+  const backend = fakeBackend();
+  const bridge = createBridge({ backend, host: fakeHost({ answer: '在' }), settings: settings() });
+  await bridge.start();
+  const started = Date.now();
+  backend.emit(messageEvent({ text: '在吗', messageId: 'z-1' }));
+  await until(() => backend.sent.length === 1, { label: 'the instant reply' });
+  t.check(Date.now() - started < 500, 'a zero delay sends immediately');
   await bridge.stop();
 }
 
