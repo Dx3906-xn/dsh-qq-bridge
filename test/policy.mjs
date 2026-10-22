@@ -137,6 +137,71 @@ t.check(room.read('nobody').length === 0, 'an unknown room reads as empty rather
 room.forget('g1');
 t.check(room.size('g1') === 0, 'forgetting a room empties it');
 
+// Her own line belongs in the transcript. Without it the brief showed twelve
+// lines of other people talking and none of her answer two seconds earlier, so
+// she had no way to know she had already spoken — which is how a participant
+// ends up answering the same remark twice.
+{
+  const log = createRoomLog(6);
+  log.note('g', '66: 大肥鱼今天有什么安排');
+  log.noteSelf('g', '摸鱼 等饭吃', 1_000_000);
+  log.note('g', '66: 会越来越肥的');
+  t.check(
+    log.read('g').join('|') === '66: 大肥鱼今天有什么安排|你: 摸鱼 等饭吃|66: 会越来越肥的',
+    'her own line is part of the transcript, in order'
+  );
+  t.check(log.lastSelfAt('g') === 1_000_000, 'and the last time she spoke is recorded');
+  t.check(log.selfCount('g', 1_000_000 + 60_000) === 1, 'and how often in the last hour');
+  // The window rolls: an hour later she has not spoken "this hour" any more.
+  t.check(log.selfCount('g', 1_000_000 + 3_600_001) === 0, 'and the count rolls off after an hour');
+
+  // An empty line is not something she said.
+  const before = log.size('g');
+  log.noteSelf('g', '   ', 2_000_000);
+  t.check(log.size('g') === before, 'an empty line is not recorded as hers');
+
+  log.forget('g');
+  t.check(log.lastSelfAt('g') === 0, 'forgetting a room forgets her own lines too');
+}
+
+// --- the interested-bystander line ------------------------------------------
+// The brief used to give only reasons somebody else had given her to speak,
+// which is the shape of an assistant. A person also speaks because they want to.
+{
+  const brief = formatRoomContext({ room: '1', lines: ['a: hi'], language: 'zh' });
+  t.check(brief.includes('话题你感兴趣'), 'the brief allows joining because the subject interests her');
+  t.check(brief.includes('我有没有话说'), 'and frames the question as whether she has something to say');
+  t.check(brief.includes('别抢话'), 'while still telling her not to talk over people');
+  // The "you have not spoken" line only appears when the caller reports on her,
+  // because a brief rendered without that context should not claim to know.
+  const first = formatRoomContext({
+    room: '1',
+    lines: ['a: hi'],
+    language: 'zh',
+    selfTalk: { sinceLast: 0, countLastHour: 0 },
+  });
+  t.check(first.includes('你还没在这个群说过话'), 'and says so when she has not spoken yet');
+
+  const after = formatRoomContext({
+    room: '1',
+    lines: ['a: hi'],
+    language: 'zh',
+    selfTalk: { sinceLast: 120_000, countLastHour: 1 },
+  });
+  t.check(after.includes('2 分钟前'), 'or how long ago she spoke');
+  const chatty = formatRoomContext({
+    room: '1',
+    lines: ['a: hi'],
+    language: 'zh',
+    selfTalk: { sinceLast: 30_000, countLastHour: 4 },
+  });
+  t.check(chatty.includes('已经说了 4 次'), 'and how many times this hour when it is a lot');
+
+  // A mention is not a judgement call, so none of this guidance appears.
+  const mentioned = formatRoomContext({ room: '1', lines: ['a: @你'], language: 'zh', mentioned: true });
+  t.check(!mentioned.includes('话题你感兴趣'), 'a mention skips the judgement guidance entirely');
+}
+
 // --- auto throttle ----------------------------------------------------------
 // Two ceilings preventing two different things: the interval lets a room finish a
 // thought, the hourly cap lets a chatty room stay cheap.
