@@ -603,4 +603,71 @@ const PRIVATE_KEY = 'qq:onebot:private:10001';
   await bridge.stop();
 }
 
+// --- the hard deadline --------------------------------------------------------
+//
+// The quiet window alone is unbounded: somebody typing a long thought with a
+// message every second resets it forever, so the answer to their first sentence
+// arrives after the last. A second clock, measured from the batch's first message
+// and moved by nothing, bounds it.
+{
+  const backend = fakeBackend();
+  const host = fakeHost({ answer: '嗯' });
+  const bridge = createBridge({
+    backend,
+    host,
+    settings: settings({ mergeWindowMs: 120, mergeHardMs: 200 }),
+  });
+  await bridge.start();
+  // Six messages, each 40ms apart: the quiet window never expires, so only the hard
+  // deadline can close this batch.
+  for (let i = 0; i < 6; i += 1) {
+    backend.emit(messageEvent({ text: `第${i}句`, messageId: `h-${i}` }));
+    await new Promise((resolve) => setTimeout(resolve, 40));
+  }
+  await until(() => host.calls.length >= 1, { label: 'the batch closed on the hard clock' });
+  t.check(host.calls.length >= 1, 'a stream that never goes quiet is still answered');
+  // Messages after the flush start a new batch, so the count is more than one and
+  // the first batch did not swallow everything.
+  await new Promise((resolve) => setTimeout(resolve, 260));
+  const totalMerged = host.calls.reduce((sum, call) => sum + call.text.split('\n').length, 0);
+  t.check(totalMerged >= 4, `no message was dropped while the batch split (${totalMerged} lines seen)`);
+  await bridge.stop();
+}
+
+// --- the gap between bubbles --------------------------------------------------
+{
+  const backend = fakeBackend();
+  const bridge = createBridge({
+    backend,
+    host: fakeHost({ answer: '一'.repeat(80) }),
+    // A tiny max so the answer splits, and a visible gap between the parts.
+    settings: settings({ maxChars: 40, segmentGapMinMs: 45, segmentGapMaxMs: 45 }),
+  });
+  await bridge.start();
+  const started = Date.now();
+  backend.emit(messageEvent({ text: '在吗', messageId: 'seg-1' }));
+  await until(() => backend.sent.length >= 2, { label: 'both bubbles' });
+  const elapsed = Date.now() - started;
+  t.check(backend.sent.length >= 2, `a long reply still splits (${backend.sent.length} bubbles)`);
+  t.check(elapsed >= 40, `the second bubble waited (${elapsed}ms)`);
+  await bridge.stop();
+}
+
+{
+  // Zero gap means the parts go back to back. A pause nobody configured would be a
+  // delay with no reason, which is the same class of bug as a missing one.
+  const backend = fakeBackend();
+  const bridge = createBridge({
+    backend,
+    host: fakeHost({ answer: '一'.repeat(80) }),
+    settings: settings({ maxChars: 40 }),
+  });
+  await bridge.start();
+  const started = Date.now();
+  backend.emit(messageEvent({ text: '在吗', messageId: 'seg-0' }));
+  await until(() => backend.sent.length >= 2, { label: 'both bubbles' });
+  t.check(Date.now() - started < 300, 'a zero gap sends the parts immediately');
+  await bridge.stop();
+}
+
 t.done();
