@@ -548,13 +548,45 @@ const PRIVATE_KEY = 'qq:onebot:private:10001';
   });
   await bridge.start();
   const started = Date.now();
-  backend.emit(messageEvent({ text: '在吗', messageId: 'd-1' }));
+  // `at` is when the message arrived, and the pause is measured from it rather
+  // than from when the answer was ready. The default fixture is a fixed 2026 date,
+  // so a fixture that means "just now" has to say so.
+  backend.emit(messageEvent({ text: '在吗', messageId: 'd-1', at: started }));
   await until(() => backend.sent.length === 1, { label: 'the delayed reply' });
   const elapsed = Date.now() - started;
   t.check(elapsed >= 70, `the reply waited (${elapsed}ms)`);
   // The model call itself is instant in a fake host, so anything above the delay
   // is the delay.
   t.check(elapsed < 2000, `and not much longer than asked (${elapsed}ms)`);
+  await bridge.stop();
+}
+
+{
+  // A slow model eats into the pause instead of stacking on top of it. This is what
+  // a fixed delay gets wrong: the person waits the model's time *plus* the pause,
+  // which reads as both broken and artificial.
+  const backend = fakeBackend();
+  const slowHost = {
+    calls: [],
+    async handle(_event, text, key) {
+      slowHost.calls.push({ text, key });
+      await new Promise((resolve) => setTimeout(resolve, 120));
+      return '在';
+    },
+  };
+  const bridge = createBridge({
+    backend,
+    host: slowHost,
+    settings: settings({ replyDelayMinMs: 60, replyDelayMaxMs: 60 }),
+  });
+  await bridge.start();
+  const started = Date.now();
+  backend.emit(messageEvent({ text: '在吗', messageId: 'slow-1', at: started }));
+  await until(() => backend.sent.length === 1, { label: 'the reply after a slow turn' });
+  const elapsed = Date.now() - started;
+  // 120ms of model time already exceeds the 60ms pause, so the pause comes out as
+  // zero and the total stays near the model time instead of being the sum.
+  t.check(elapsed < 300, `a slow model is not charged the pause twice (${elapsed}ms)`);
   await bridge.stop();
 }
 
