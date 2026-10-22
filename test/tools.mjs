@@ -147,7 +147,26 @@ const t = suite('tools');
   t.check(missing.ok === false, 'an unknown target is reported as not sent');
   t.check(missing.sent === 0, 'and nothing is counted as sent');
   t.check(missing.error.includes('no conversation'), `and the reason says so (got "${missing.error}")`);
-  t.check(/没有发出去/.test(tool.output.render({}, missing)[0].text), 'the rendered form says it did not go out');
+  t.check(/没发出去/.test(tool.output.render({}, missing)[0].text), 'the rendered form says it did not go out');
+  // The detail is what the model reads back, and it has to name what it failed to
+  // reach: "没发出去" alone leaves it guessing whether the fault was the number,
+  // the connection, or its own wording.
+  t.check(missing.where === '', 'and no destination is claimed when none was resolved');
+  t.check(missing.detail.includes('424242'), `the detail repeats what was asked for (${missing.detail})`);
+}
+
+// --- qq_send says where it went, not just that it did ------------------------
+{
+  const ctx = fakeCtx();
+  registerTools(ctx, deps());
+  const tool = ctx.registered.get('qq_send');
+  const sent = await tool.execute({ where: 'private:10001', text: '在忙吗' }, {});
+  t.check(sent.ok === true, 'a delivered message reports ok');
+  t.check(sent.where.includes('林晚'), `and names who received it (${sent.where})`);
+  t.check(sent.to === '10001', 'and carries the raw id, for a caller that wants it');
+  t.check(typeof sent.occurredAt === 'string' && sent.occurredAt.length > 0, 'and when it happened');
+  t.check(sent.detail.includes('已经发到'), `and a sentence a person could read (${sent.detail})`);
+  t.check(tool.output.render({}, sent)[0].text === sent.detail, 'the rendered form is that sentence, not a bare count');
 }
 
 // --- qq_history --------------------------------------------------------------
