@@ -302,18 +302,24 @@ const PRIVATE_KEY = 'qq:onebot:private:10001';
   t.check(host.calls[0].text.includes('有人吗'), 'the transcript contains what was actually said');
   t.check(host.calls[0].text.includes('SILENT'), 'and offers silence as an answer');
 
-  // The transcript grows, but the turn does not: one decision covers the burst.
+  // Every line is judged by default. The throttle is opt-in now, because its
+  // implementation drops the message rather than deferring it — so the last thing
+  // a room says before going quiet used to be the one thing never looked at.
   backend.emit(groupMessage('在打游戏吗', { messageId: 'a-2' }));
   backend.emit(groupMessage('算了 你们玩', { messageId: 'a-3' }));
-  await new Promise((resolve) => setTimeout(resolve, 40));
-  t.check(host.calls.length === 1, 'a burst of messages does not become a burst of turns');
-
-  // A mention is not a judgement call, so it never waits for the interval.
-  backend.emit(groupMessage('@你 你来不来', { messageId: 'a-4', mentionsSelf: true }));
-  await until(() => backend.sent.length === 2, { label: 'the reply to the mention' });
-  t.check(host.calls.length === 2, 'a mention bypasses the interval');
+  await until(() => host.calls.length === 3, { label: 'the two further judgements' });
+  t.check(host.calls.length === 3, 'without the throttle, each line reaches the agent');
   t.check(
-    host.calls[1].text.includes('叫你'),
+    host.calls[2].text.includes('算了 你们玩'),
+    'and the last line of a burst is judged, not lost'
+  );
+
+  // A mention is not a judgement call, so it never waits for an interval.
+  backend.emit(groupMessage('@你 你来不来', { messageId: 'a-4', mentionsSelf: true }));
+  await until(() => host.calls.length === 4, { label: 'the reply to the mention' });
+  t.check(host.calls.length === 4, 'a mention still reaches the agent');
+  t.check(
+    host.calls[3].text.includes('叫你'),
     'and the brief says it is addressed to her rather than to the room'
   );
   await bridge.stop();
