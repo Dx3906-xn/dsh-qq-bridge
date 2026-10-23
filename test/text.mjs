@@ -4,7 +4,7 @@
 // fixture would not: an array of segments from NapCat, a CQ-code string from an
 // older sender, an @ of this account mixed into a sentence, and a reply long
 // enough that cutting it badly is visible to the person reading it.
-import { cleanOutbound, flattenMessage, renderInbound, splitMessage, unescapeCq } from '../lib/text.js';
+import { cleanOutbound, flattenMessage, renderInbound, splitMessage, splitParagraphs, unescapeCq } from '../lib/text.js';
 import { messageEvent, suite } from './helpers.mjs';
 
 const t = suite('text');
@@ -122,5 +122,29 @@ t.check(cleanOutbound('a\r\nb') === 'a\nb', 'CRLF becomes LF');
 t.check(cleanOutbound('a\n\n\n\nb') === 'a\n\nb', 'runs of blank lines collapse');
 t.check(cleanOutbound('  在的。  ') === '在的。', 'surrounding whitespace goes');
 t.check(cleanOutbound('不许说脏话') === '不许说脏话', 'content is not censored');
+
+// --- paragraphs are messages -------------------------------------------------
+//
+// "一条一句，多的拆条" was being ignored because it is an instruction about
+// presentation and the model's whole output is one string, where the only
+// presentation available is a newline. A blank line is the model saying "new bubble";
+// the transport was flattening it back into one bubble with a gap in the middle.
+{
+  const two = splitParagraphs('那我先写一句\n\n老大 你说的自由 我收下了');
+  t.check(two.length === 2, `a blank line is a bubble boundary (${two.length})`);
+  t.check(two[0] === '那我先写一句', 'the first bubble is the first paragraph');
+  t.check(two[1] === '老大 你说的自由 我收下了', 'and the second follows it');
+
+  t.check(splitParagraphs('记下了 一句一行 多的拆条').length === 1, 'a reply with no blank line stays one bubble');
+
+  // A person who pauses leans on the key; three blank lines are one boundary, not
+  // three empty messages.
+  const many = splitParagraphs('行\n\n\n\n好');
+  t.check(many.length === 2, `a run of blank lines is still one boundary (${many.length})`);
+  t.check(many.every((part) => part !== ''), 'and never yields an empty bubble');
+
+  t.check(splitParagraphs('').length === 0, 'empty text has no bubbles');
+  t.check(splitParagraphs('   \n\n  ').length === 0, 'whitespace-only text has none either');
+}
 
 t.done();
